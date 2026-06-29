@@ -1,5 +1,4 @@
 .env.local
 login_state.json
-seen.json
 __pycache__/
 *.pyc
