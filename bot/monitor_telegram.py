@@ -27,6 +27,7 @@ from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import InputPeerChannel
 
 SEEN_FILE = Path(__file__).parent / "seen.json"
 
@@ -34,11 +35,29 @@ API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_STRING = os.environ["TELEGRAM_SESSION"]
 
-# Каналы/чаты с заказами на монтаж, на которые подписан аккаунт (username без @).
-# Фаза 1 — тест на 2 источниках, остальные ~10 добавить после проверки фильтра.
+# Приватный канал (без username) — добавлен по InputPeerChannel(id, access_hash)
+# после join_private.py (ImportChatInviteRequest по invite-ссылке
+# +qoxNFMOfVbVkYzY6). Бэрый int не резолвится в отдельном процессе/сессии без
+# кэша сущностей — нужен явный access_hash.
+PRIVATE_CHAT_ID = 1406991134
+PRIVATE_CHAT = InputPeerChannel(PRIVATE_CHAT_ID, -7797340264784814279)
+
 CHANNELS = [
-    "vakansii_reelsmaker",
+    "frilanse",
+    "poiskfreelance",
+    "theClapperChat",
+    "jetlagchat",
+    "KinoMastery",
+    "mari_vakansii",
+    "textodromo",
+    "GetJob_videoedit",
+    PRIVATE_CHAT,
     "cam_mtg",
+    "vakansii_reelsmaker",
+    "SearchEditorr",
+    "reelsmaker_tinder",
+    "prodjob",
+    "ru_montage_pins",
 ]
 
 # Сколько последних сообщений проверять за один прогон в каждом канале —
@@ -59,10 +78,11 @@ def save_seen(seen: set[str]) -> None:
 async def fetch_new(client: TelegramClient, seen: set[str]) -> list[dict]:
     new_cards = []
     for channel in CHANNELS:
+        channel_key = channel.channel_id if isinstance(channel, InputPeerChannel) else channel
         async for message in client.iter_messages(channel, limit=MESSAGES_PER_CHANNEL):
             if not message.text:
                 continue
-            msg_key = f"{channel}:{message.id}"
+            msg_key = f"{channel_key}:{message.id}"
             if msg_key in seen:
                 continue
             seen.add(msg_key)
@@ -78,6 +98,15 @@ async def fetch_new(client: TelegramClient, seen: set[str]) -> list[dict]:
             title = lines[0][:120]
             description = message.text.strip()
 
+            # Приватный чат (channel — число, не username) не имеет публичной
+            # t.me/username ссылки — используем формат t.me/c/<id>/<msg_id>,
+            # он открывает сообщение внутри приложения для тех, кто уже состоит
+            # в чате (наш аккаунт состоит, см. join_private.py).
+            if isinstance(channel, InputPeerChannel):
+                url = f"https://t.me/c/{channel.channel_id}/{message.id}"
+            else:
+                url = f"https://t.me/{channel}/{message.id}"
+
             new_cards.append(
                 {
                     "id": msg_key,
@@ -85,7 +114,7 @@ async def fetch_new(client: TelegramClient, seen: set[str]) -> list[dict]:
                     "description": description,
                     "budget": "",
                     "max_budget": "",
-                    "url": f"https://t.me/{channel}/{message.id}",
+                    "url": url,
                 }
             )
     return new_cards
