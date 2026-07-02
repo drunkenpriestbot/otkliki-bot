@@ -25,6 +25,11 @@ import os
 import sys
 from pathlib import Path
 
+# Один зависший/флуд-заблокированный канал не должен убивать весь прогон до
+# жёсткого лимита job (10 мин в monitor.yml, живой инцидент 02.07 — job молча
+# завис на fetch_new и был убит таймаутом, ничего не сохранив и не отправив).
+CHANNEL_TIMEOUT = 30
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import InputPeerChannel
@@ -75,48 +80,63 @@ def save_seen(seen: set[str]) -> None:
     SEEN_FILE.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2))
 
 
+async def fetch_channel(client: TelegramClient, channel, seen: set[str]) -> list[dict]:
+    channel_key = channel.channel_id if isinstance(channel, InputPeerChannel) else channel
+    new_cards = []
+    async for message in client.iter_messages(channel, limit=MESSAGES_PER_CHANNEL):
+        if not message.text:
+            continue
+        msg_key = f"{channel_key}:{message.id}"
+        if msg_key in seen:
+            continue
+        seen.add(msg_key)
+
+        # Заказы в каналах обычно идут одним сплошным текстом без чёткой
+        # структуры заголовок/описание/бюджет — в отличие от карточек на
+        # бирже. Здесь просто используем первую строку как условный
+        # "заголовок", остальное как описание. Бюджет, если упоминается
+        # в тексте, classify.py/draft.py всё равно увидят в description —
+        # отдельно парсить не обязательно, если на бирже не было строгого
+        # поля "бюджет".
+        lines = message.text.strip().split("\n")
+        title = lines[0][:120]
+        description = message.text.strip()
+
+        # Приватный чат (channel — число, не username) не имеет публичной
+        # t.me/username ссылки — используем формат t.me/c/<id>/<msg_id>,
+        # он открывает сообщение внутри приложения для тех, кто уже состоит
+        # в чате (наш аккаунт состоит, см. join_private.py).
+        if isinstance(channel, InputPeerChannel):
+            url = f"https://t.me/c/{channel.channel_id}/{message.id}"
+        else:
+            url = f"https://t.me/{channel}/{message.id}"
+
+        new_cards.append(
+            {
+                "id": msg_key,
+                "title": title,
+                "description": description,
+                "budget": "",
+                "max_budget": "",
+                "url": url,
+            }
+        )
+    return new_cards
+
+
 async def fetch_new(client: TelegramClient, seen: set[str]) -> list[dict]:
     new_cards = []
     for channel in CHANNELS:
         channel_key = channel.channel_id if isinstance(channel, InputPeerChannel) else channel
-        async for message in client.iter_messages(channel, limit=MESSAGES_PER_CHANNEL):
-            if not message.text:
-                continue
-            msg_key = f"{channel_key}:{message.id}"
-            if msg_key in seen:
-                continue
-            seen.add(msg_key)
-
-            # Заказы в каналах обычно идут одним сплошным текстом без чёткой
-            # структуры заголовок/описание/бюджет — в отличие от карточек на
-            # бирже. Здесь просто используем первую строку как условный
-            # "заголовок", остальное как описание. Бюджет, если упоминается
-            # в тексте, classify.py/draft.py всё равно увидят в description —
-            # отдельно парсить не обязательно, если на бирже не было строгого
-            # поля "бюджет".
-            lines = message.text.strip().split("\n")
-            title = lines[0][:120]
-            description = message.text.strip()
-
-            # Приватный чат (channel — число, не username) не имеет публичной
-            # t.me/username ссылки — используем формат t.me/c/<id>/<msg_id>,
-            # он открывает сообщение внутри приложения для тех, кто уже состоит
-            # в чате (наш аккаунт состоит, см. join_private.py).
-            if isinstance(channel, InputPeerChannel):
-                url = f"https://t.me/c/{channel.channel_id}/{message.id}"
-            else:
-                url = f"https://t.me/{channel}/{message.id}"
-
-            new_cards.append(
-                {
-                    "id": msg_key,
-                    "title": title,
-                    "description": description,
-                    "budget": "",
-                    "max_budget": "",
-                    "url": url,
-                }
+        try:
+            new_cards.extend(
+                await asyncio.wait_for(fetch_channel(client, channel, seen), timeout=CHANNEL_TIMEOUT)
             )
+        except asyncio.TimeoutError:
+            print(f"Канал {channel_key} завис (>{CHANNEL_TIMEOUT}s), пропускаю", file=sys.stderr)
+        # Сохраняем seen после каждого канала — если следующий канал зависнет
+        # или упадёт, уже обработанные каналы не будут пере-опрошены заново.
+        save_seen(seen)
     return new_cards
 
 
@@ -124,7 +144,6 @@ async def run() -> list[dict]:
     seen = load_seen()
     async with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
         new_cards = await fetch_new(client, seen)
-    save_seen(seen)
     return new_cards
 
 
