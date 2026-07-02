@@ -140,13 +140,29 @@ async def fetch_new(client: TelegramClient, seen: set[str]) -> list[dict]:
     return new_cards
 
 
+CONNECT_TIMEOUT = 30
+
+
 async def run() -> list[dict]:
     seen = load_seen()
-    async with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+    # client.connect() (внутри __aenter__) ничем не таймаутится сам по себе —
+    # если сеть до Telegram зависнет на уровне TCP/MTProto-хендшейка, весь job
+    # молча висит до жёсткого лимита GitHub Actions (живой инцидент 02.07,
+    # 10+ минут без единого байта вывода, ДО того как дело доходит до самих
+    # каналов). Оборачиваем явным таймаутом, а не полагаемся на per-channel.
+    await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
+    try:
         new_cards = await fetch_new(client, seen)
+    finally:
+        await client.disconnect()
     return new_cards
 
 
 if __name__ == "__main__":
-    result = asyncio.run(run())
+    try:
+        result = asyncio.run(run())
+    except asyncio.TimeoutError:
+        print("Не удалось подключиться к Telegram за отведённое время", file=sys.stderr)
+        result = []
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)

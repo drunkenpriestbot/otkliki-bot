@@ -42,6 +42,12 @@ PROMPT_TEMPLATE = """Сообщение из Telegram-канала/чата фр
 
 
 GROQ_MAX_RETRIES = 3
+# Retry-After у Groq бывает и "подождите пару секунд" (RPM-лимит), и "подождите
+# 4m40s" (дневная квота токенов исчерпана, TPD) — во втором случае это не
+# временный затык, а фактический стоп на сегодня. Спать несколько минут на
+# КАЖДОГО кандидата нельзя — весь job зависает (живой инцидент 02.07, 10:50).
+# Ждём максимум это значение, иначе сразу считаем недоступным.
+MAX_RETRY_SLEEP = 10
 
 
 def ask_groq(prompt: str) -> str:
@@ -57,12 +63,9 @@ def ask_groq(prompt: str) -> str:
             },
             timeout=30,
         )
-        # Бесплатный тариф Groq лимитирует запросы в минуту — на бэклоге в
-        # десятки-сотни сообщений без паузы упирается в 429 почти сразу.
-        # Retry-After уважаем перед тем, как считать это отказом.
         if resp.status_code == 429:
             retry_after = float(resp.headers.get("Retry-After", 3))
-            if attempt < GROQ_MAX_RETRIES - 1:
+            if retry_after <= MAX_RETRY_SLEEP and attempt < GROQ_MAX_RETRIES - 1:
                 time.sleep(retry_after)
                 continue
         resp.raise_for_status()
