@@ -48,8 +48,9 @@ PRIVATE_CHAT_ID = 1406991134
 PRIVATE_CHAT = InputPeerChannel(PRIVATE_CHAT_ID, -7797340264784814279)
 
 CHANNELS = [
-    "frilanse",
-    "poiskfreelance",
+    # frilanse и poiskfreelance убраны 02.07 — общие свалки для шабашки/
+    # микрозаймов/сетевых разводов, к монтажу видео отношения не имеют, только
+    # шумели спамом мимо классификатора.
     "theClapperChat",
     "jetlagchat",
     "KinoMastery",
