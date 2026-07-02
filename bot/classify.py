@@ -73,18 +73,8 @@ def ask_groq(prompt: str) -> str:
     resp.raise_for_status()
 
 
-# Если подряд столько отказов Groq — это не разовый сбой, а исчерпанная квота/
-# рейт-лимит на весь прогон. Пропускать всех дальше в этом случае опасно: весь
-# бэклог (десятки-сотни сообщений) пролетит фильтр и зафлудит Telegram-превью
-# (так и случилось 02.07 — 429 от Groq на сотни кандидатов подряд → все "relevant"
-# → preview_notify.py упал от 429 самого Telegram). Разовые/редкие сбои Groq
-# по-прежнему пропускаем дальше, чтобы не терять заказ молча.
-MAX_CONSECUTIVE_FAILURES = 5
-
-
 def run(candidates: list[dict]) -> list[dict]:
     relevant = []
-    consecutive_failures = 0
     for card in candidates:
         prompt = PROMPT_TEMPLATE.format(
             title=card["title"], description=card["description"]
@@ -92,19 +82,16 @@ def run(candidates: list[dict]) -> list[dict]:
         try:
             answer = ask_groq(prompt)
         except Exception as e:
-            consecutive_failures += 1
-            if consecutive_failures > MAX_CONSECUTIVE_FAILURES:
-                print(
-                    f"Groq недоступен для {card['id']}: {e} — похоже на массовый "
-                    "отказ (квота/рейт-лимит), пропускаю кандидата, не считаю релевантным",
-                    file=sys.stderr,
-                )
-                continue
-            print(f"Groq недоступен для {card['id']}: {e}", file=sys.stderr)
-            relevant.append(card)
+            # Раньше при отказе Groq кандидат пропускался как "на всякий случай
+            # релевантный", чтобы не терять заказ молча. На практике это привело
+            # к обратному: пока дневная квота Groq на исходе (частые 429),
+            # именно этот фолбэк пропускал спам/несвязанные посты без всякой
+            # проверки контента (живой инцидент 02.07 — юзер получил чистый
+            # спам вместо вакансий по монтажу). Лучше изредка молча пропустить
+            # реальный заказ при сбое Groq, чем систематически заливать спамом.
+            print(f"Groq недоступен для {card['id']}: {e}, пропускаю кандидата", file=sys.stderr)
             continue
 
-        consecutive_failures = 0
         if answer.startswith("YES"):
             relevant.append(card)
     return relevant
