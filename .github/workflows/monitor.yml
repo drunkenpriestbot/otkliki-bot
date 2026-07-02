@@ -88,5 +88,15 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add seen.json pending.json
           git diff --quiet --cached || git commit -m "chore: update seen.json/pending.json"
-          git pull --rebase origin main
-          git push
+
+          # seen.json/pending.json — самопополняемые JSON-словари без единственно
+          # верной версии; при почти одновременных запусках (кнопка + cron)
+          # обычный `pull --rebase` падает в конфликт на этих файлах и весь job
+          # красный, хотя черновик/удаление уже реально отработали. Мержим с
+          # приоритетом своей версии и ретраим push — потерять здесь можно разве
+          # что чужую пометку "уже обработано", а она пересоздастся сама.
+          for i in 1 2 3 4 5; do
+            git pull --no-rebase -X ours origin main && git push && break
+            echo "push/pull попытка $i не удалась, повтор..."
+            sleep $((i * 3))
+          done
