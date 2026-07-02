@@ -5,7 +5,21 @@ on:
   # (троттлинг до ~1.5-2 часов вместо заданного интервала, см. LESSONS_LEARNED.md
   # пункт 2). Запуск дёргает внешний бесплатный cron-job.org через GitHub REST
   # API (workflow_dispatch), а не встроенный cron.
-  workflow_dispatch: {}
+  #
+  # action=monitor (по умолчанию, дёргает cron-job.org каждые 10 минут) — полный
+  # обход каналов + превью-уведомления с кнопками. action=generate/delete дёргает
+  # Cloudflare Worker (cloudflare-worker/webhook.js) по нажатию кнопки в Telegram —
+  # генерирует черновик для одного кандидата или просто убирает его из pending.json.
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "monitor | generate | delete"
+        required: false
+        default: "monitor"
+      candidate_id:
+        description: "id кандидата для generate/delete"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -41,9 +55,9 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Run pipeline
+      - name: Run monitor pipeline
+        if: ${{ github.event.inputs.action == 'monitor' || github.event.inputs.action == '' }}
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -53,14 +67,25 @@ jobs:
         run: |
           python monitor_telegram.py > candidates.json
           python classify.py < candidates.json > classified.json
-          python draft.py < classified.json > drafted.json
-          python notify.py < drafted.json
+          python preview_notify.py < classified.json
 
-      - name: Commit updated seen.json
+      - name: Generate draft for one candidate
+        if: ${{ github.event.inputs.action == 'generate' }}
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python generate_one.py "${{ github.event.inputs.candidate_id }}"
+
+      - name: Delete one candidate
+        if: ${{ github.event.inputs.action == 'delete' }}
+        run: python delete_candidate.py "${{ github.event.inputs.candidate_id }}"
+
+      - name: Commit updated seen.json / pending.json
         run: |
           git config user.name "otkliki-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add seen.json
-          git diff --quiet --cached || git commit -m "chore: update seen.json"
+          git add seen.json pending.json
+          git diff --quiet --cached || git commit -m "chore: update seen.json/pending.json"
           git pull --rebase origin main
           git push
