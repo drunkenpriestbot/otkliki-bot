@@ -11,6 +11,7 @@
 import json
 import os
 import sys
+import time
 
 import requests
 
@@ -40,24 +41,47 @@ PROMPT_TEMPLATE = """Сообщение из Telegram-канала/чата фр
 Ответь СТРОГО одним словом: YES или NO."""
 
 
+GROQ_MAX_RETRIES = 3
+
+
 def ask_groq(prompt: str) -> str:
-    resp = requests.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model": GROQ_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "max_tokens": 5,
-        },
-        timeout=30,
-    )
+    for attempt in range(GROQ_MAX_RETRIES):
+        resp = requests.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "max_tokens": 5,
+            },
+            timeout=30,
+        )
+        # Бесплатный тариф Groq лимитирует запросы в минуту — на бэклоге в
+        # десятки-сотни сообщений без паузы упирается в 429 почти сразу.
+        # Retry-After уважаем перед тем, как считать это отказом.
+        if resp.status_code == 429:
+            retry_after = float(resp.headers.get("Retry-After", 3))
+            if attempt < GROQ_MAX_RETRIES - 1:
+                time.sleep(retry_after)
+                continue
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip().upper()
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip().upper()
+
+
+# Если подряд столько отказов Groq — это не разовый сбой, а исчерпанная квота/
+# рейт-лимит на весь прогон. Пропускать всех дальше в этом случае опасно: весь
+# бэклог (десятки-сотни сообщений) пролетит фильтр и зафлудит Telegram-превью
+# (так и случилось 02.07 — 429 от Groq на сотни кандидатов подряд → все "relevant"
+# → preview_notify.py упал от 429 самого Telegram). Разовые/редкие сбои Groq
+# по-прежнему пропускаем дальше, чтобы не терять заказ молча.
+MAX_CONSECUTIVE_FAILURES = 5
 
 
 def run(candidates: list[dict]) -> list[dict]:
     relevant = []
+    consecutive_failures = 0
     for card in candidates:
         prompt = PROMPT_TEMPLATE.format(
             title=card["title"], description=card["description"]
@@ -65,12 +89,19 @@ def run(candidates: list[dict]) -> list[dict]:
         try:
             answer = ask_groq(prompt)
         except Exception as e:
-            # Если Groq недоступен — пропускаем заказ дальше на Claude, а не теряем
-            # его молча (Claude всё равно сделает финальную проверку релевантности).
+            consecutive_failures += 1
+            if consecutive_failures > MAX_CONSECUTIVE_FAILURES:
+                print(
+                    f"Groq недоступен для {card['id']}: {e} — похоже на массовый "
+                    "отказ (квота/рейт-лимит), пропускаю кандидата, не считаю релевантным",
+                    file=sys.stderr,
+                )
+                continue
             print(f"Groq недоступен для {card['id']}: {e}", file=sys.stderr)
             relevant.append(card)
             continue
 
+        consecutive_failures = 0
         if answer.startswith("YES"):
             relevant.append(card)
     return relevant

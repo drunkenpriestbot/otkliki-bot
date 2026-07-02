@@ -13,6 +13,7 @@ import html
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -24,6 +25,10 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 MAX_DESCRIPTION_LEN = 2500
+# Telegram лимитирует ~1 сообщение/сек в один и тот же чат — без паузы между
+# карточками свежий бэклог из нескольких десятков кандидатов сразу ловит 429.
+SEND_DELAY = 1.2
+MAX_RETRIES = 5
 
 
 def load_pending() -> dict:
@@ -59,24 +64,29 @@ def format_preview(card: dict) -> str:
 
 
 def send_preview(card: dict) -> None:
-    resp = requests.post(
-        API_URL,
-        json={
-            "chat_id": CHAT_ID,
-            "text": format_preview(card),
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-            "reply_markup": {
-                "inline_keyboard": [
-                    [
-                        {"text": "✍️ Сгенерировать отклик", "callback_data": f"gen:{card['id']}"},
-                        {"text": "🗑 Удалить", "callback_data": f"del:{card['id']}"},
-                    ]
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": format_preview(card),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "✍️ Сгенерировать отклик", "callback_data": f"gen:{card['id']}"},
+                    {"text": "🗑 Удалить", "callback_data": f"del:{card['id']}"},
                 ]
-            },
+            ]
         },
-        timeout=20,
-    )
+    }
+    for attempt in range(MAX_RETRIES):
+        resp = requests.post(API_URL, json=payload, timeout=20)
+        if resp.status_code == 429:
+            retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+            print(f"Telegram 429, жду {retry_after}s (попытка {attempt + 1})", file=sys.stderr)
+            time.sleep(retry_after)
+            continue
+        resp.raise_for_status()
+        return
     resp.raise_for_status()
 
 
@@ -85,9 +95,12 @@ def run(cards: list[dict]) -> None:
         return
     pending = load_pending()
     for card in cards:
-        pending[card["id"]] = card
         send_preview(card)
-    save_pending(pending)
+        # Сохраняем после каждой карточки — если упадём на середине списка
+        # (например Telegram/сеть), уже отправленные кандидаты не потеряются.
+        pending[card["id"]] = card
+        save_pending(pending)
+        time.sleep(SEND_DELAY)
 
 
 if __name__ == "__main__":
