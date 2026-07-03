@@ -18,9 +18,30 @@ from pathlib import Path
 
 import requests
 
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+
+def _load_groq_keys() -> list[str]:
+    # Несколько бесплатных аккаунтов Groq — у каждого своя дневная TPD-квота
+    # (100k токенов), которую при 13 каналах раз в 15 минут регулярно не
+    # хватает на один аккаунт. GROQ_API_KEY — основной, GROQ_API_KEY_2..9 —
+    # дополнительные, ротируем по кругу при 429 (квота исчерпана) или 401
+    # (ключ невалиден — например ещё не подтверждён новый аккаунт).
+    # В GitHub Actions env-переменная для отсутствующего секрета придёт как
+    # пустая строка (не отсутствующим ключом) — фильтруем явно. Перебираем
+    # фиксированный диапазон, а не останавливаемся на первом пропуске — так
+    # можно свободно убрать/добавить ключ в середине списка.
+    keys = [os.environ["GROQ_API_KEY"]]
+    for i in range(2, 20):
+        key = os.environ.get(f"GROQ_API_KEY_{i}")
+        if key:
+            keys.append(key)
+    return keys
+
+
+GROQ_KEYS = _load_groq_keys()
+_current_key_idx = 0
 
 CACHE_FILE = Path(__file__).parent / "classify_cache.json"
 UNCLASSIFIED_FILE = Path(__file__).parent / "unclassified.json"
@@ -137,26 +158,43 @@ MAX_RETRY_SLEEP = 10
 
 
 def ask_groq(prompt: str) -> str:
-    for attempt in range(GROQ_MAX_RETRIES):
-        resp = requests.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "max_tokens": 5,
-            },
-            timeout=30,
-        )
-        if resp.status_code == 429:
-            retry_after = float(resp.headers.get("Retry-After", 3))
-            if retry_after <= MAX_RETRY_SLEEP and attempt < GROQ_MAX_RETRIES - 1:
-                time.sleep(retry_after)
-                continue
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip().upper()
-    resp.raise_for_status()
+    global _current_key_idx
+    last_resp = None
+
+    # Перебираем ключи по кругу максимум по одному разу каждый за вызов —
+    # если ключ невалиден (401, например неподтверждённый аккаунт) или у
+    # него исчерпана дневная квота (429 с большим Retry-After), сразу
+    # переходим к следующему, не тратя циклы retry на заведомо мёртвый ключ.
+    for _ in range(len(GROQ_KEYS)):
+        key = GROQ_KEYS[_current_key_idx]
+
+        for attempt in range(GROQ_MAX_RETRIES):
+            resp = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                    "max_tokens": 5,
+                },
+                timeout=30,
+            )
+            if resp.status_code == 401:
+                break  # невалидный ключ — сразу к следующему
+            if resp.status_code == 429:
+                retry_after = float(resp.headers.get("Retry-After", 3))
+                if retry_after <= MAX_RETRY_SLEEP and attempt < GROQ_MAX_RETRIES - 1:
+                    time.sleep(retry_after)
+                    continue
+                break  # дневная квота этого ключа исчерпана — к следующему
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip().upper()
+
+        last_resp = resp
+        _current_key_idx = (_current_key_idx + 1) % len(GROQ_KEYS)
+
+    last_resp.raise_for_status()
 
 
 def run(candidates: list[dict]) -> list[dict]:
