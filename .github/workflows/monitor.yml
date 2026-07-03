@@ -9,7 +9,7 @@ on:
   # action=monitor (по умолчанию, дёргает cron-job.org каждые 10 минут) — полный
   # обход каналов + превью-уведомления с кнопками. action=generate/delete дёргает
   # Cloudflare Worker (cloudflare-worker/webhook.js) по нажатию кнопки в Telegram —
-  # генерирует черновик для одного кандидата или просто убирает его из pending.json.
+  # генерирует черновик для одного кандидата или просто убирает его из pending/.
   workflow_dispatch:
     inputs:
       action:
@@ -81,20 +81,33 @@ jobs:
         if: ${{ github.event.inputs.action == 'delete' }}
         run: python delete_candidate.py "${{ github.event.inputs.candidate_id }}"
 
-      - name: Commit updated seen.json / pending.json
+      - name: Commit updated seen.json / pending / classify_cache.json
         if: always()
         run: |
           git config user.name "otkliki-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add seen.json pending.json
-          git diff --quiet --cached || git commit -m "chore: update seen.json/pending.json"
 
-          # seen.json/pending.json — самопополняемые JSON-словари без единственно
-          # верной версии; при почти одновременных запусках (кнопка + cron)
-          # обычный `pull --rebase` падает в конфликт на этих файлах и весь job
-          # красный, хотя черновик/удаление уже реально отработали. Мержим с
-          # приоритетом своей версии и ретраим push — потерять здесь можно разве
-          # что чужую пометку "уже обработано", а она пересоздастся сама.
+          # pending/ — папка, по файлу на кандидата (см. pending_store.py) —
+          # раньше был единый pending.json, гонка на нём при параллельных
+          # ранах (крон + клики кнопок) тихо теряла кандидатов через
+          # `-X ours`. Разные раны теперь пишут в разные файлы, конфликтовать
+          # нечему. classify_cache.json/unclassified.json могут не
+          # существовать (если прогон ничего не классифицировал/не деградировал) —
+          # добавляем их только если есть, иначе `git add` на несуществующий
+          # путь падает и рвёт весь шаг.
+          git add seen.json
+          [ -d pending ] && git add pending/
+          [ -f classify_cache.json ] && git add classify_cache.json
+          [ -f unclassified.json ] && git add unclassified.json
+          git diff --quiet --cached || git commit -m "chore: update seen.json/pending/classify_cache.json"
+
+          # Эти файлы — самопополняемые, без единственно верной версии; при
+          # почти одновременных запусках обычный `pull --rebase` падает в
+          # конфликт и весь job красный, хотя черновик/удаление уже реально
+          # отработали. Мержим с приоритетом своей версии и ретраим push —
+          # потерять здесь можно разве что чужую пометку "уже обработано" в
+          # seen.json/classify_cache.json, она пересоздастся сама. pending/
+          # конфликтов не ловит вообще (разные файлы), это не про него.
           for i in 1 2 3 4 5; do
             git pull --no-rebase -X ours origin main && git push && break
             echo "push/pull попытка $i не удалась, повтор..."

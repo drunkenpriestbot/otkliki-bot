@@ -8,16 +8,54 @@
 ВАЖНО: PROMPT_TEMPLATE ниже — placeholder. Замени описание того, что считается
 релевантным заказом, под свою нишу (см. комментарий внутри).
 """
+import hashlib
 import json
 import os
+import re
 import sys
 import time
+from pathlib import Path
 
 import requests
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+CACHE_FILE = Path(__file__).parent / "classify_cache.json"
+UNCLASSIFIED_FILE = Path(__file__).parent / "unclassified.json"
+
+# Явные маркеры самопиара монтажёров, предлагающих СВОИ услуги — не вакансии,
+# а противоположность вакансии. Живой инцидент: при смене модели на более
+# дешёвую (llama-3.1-8b-instant) именно эти посты массово путались с наймом
+# по ключевым словам "монтаж"/"монтажёр". Regex ловит только однозначные
+# случаи и отсекает их ДО вызова Groq — экономит квоту без риска для
+# точности на пограничных случаях (те по-прежнему идут на LLM).
+SELF_PROMO_PATTERNS = [
+    re.compile(r"#помогу\b", re.IGNORECASE),
+    re.compile(
+        r"меня зовут .{0,40}(я (делаю|занимаюсь)|монтаж[её]р)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+
+
+def is_obvious_self_promo(text: str) -> bool:
+    return any(p.search(text) for p in SELF_PROMO_PATTERNS)
+
+
+def text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def load_cache() -> dict:
+    if CACHE_FILE.exists():
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_cache(cache: dict) -> None:
+    CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 PROMPT_TEMPLATE = """Сообщение из Telegram-канала/чата фрилансеров-монтажёров:
 Заголовок: {title}
@@ -75,25 +113,55 @@ def ask_groq(prompt: str) -> str:
 
 def run(candidates: list[dict]) -> list[dict]:
     relevant = []
+    cache = load_cache()
+    degraded = []
+
     for card in candidates:
+        text = f"{card['title']}\n{card['description']}"
+
+        if is_obvious_self_promo(text):
+            continue
+
+        h = text_hash(text)
+        if h in cache:
+            if cache[h] == "YES":
+                relevant.append(card)
+            continue
+
         prompt = PROMPT_TEMPLATE.format(
             title=card["title"], description=card["description"]
         )
         try:
             answer = ask_groq(prompt)
         except Exception as e:
-            # Раньше при отказе Groq кандидат пропускался как "на всякий случай
-            # релевантный", чтобы не терять заказ молча. На практике это привело
-            # к обратному: пока дневная квота Groq на исходе (частые 429),
-            # именно этот фолбэк пропускал спам/несвязанные посты без всякой
-            # проверки контента (живой инцидент 02.07 — юзер получил чистый
-            # спам вместо вакансий по монтажу). Лучше изредка молча пропустить
-            # реальный заказ при сбое Groq, чем систематически заливать спамом.
-            print(f"Groq недоступен для {card['id']}: {e}, пропускаю кандидата", file=sys.stderr)
+            # Раньше отказ Groq либо тихо ронял кандидата (fail-closed), либо
+            # тихо считал его релевантным (старый fail-open) — оба варианта
+            # без единого сигнала пользователю о деградации. Теперь сохраняем
+            # сырой пост на ручной разбор и явно уведомляем в конце прогона
+            # одним сообщением (не спамим по кандидату).
+            print(f"Groq недоступен для {card['id']}: {e}, сохраняю на ручной разбор", file=sys.stderr)
+            degraded.append(card)
             continue
 
+        cache[h] = "YES" if answer.startswith("YES") else "NO"
         if answer.startswith("YES"):
             relevant.append(card)
+
+    save_cache(cache)
+
+    if degraded:
+        existing = json.loads(UNCLASSIFIED_FILE.read_text(encoding="utf-8")) if UNCLASSIFIED_FILE.exists() else []
+        existing.extend(degraded)
+        UNCLASSIFIED_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            import alert
+            alert.send(
+                f"⚠️ Groq недоступен — {len(degraded)} кандидатов не проверено, "
+                f"сохранены в unclassified.json для ручного разбора."
+            )
+        except Exception as e:
+            print(f"Не удалось отправить алерт о деградации: {e}", file=sys.stderr)
+
     return relevant
 
 

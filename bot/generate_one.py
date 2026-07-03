@@ -1,29 +1,34 @@
 """
 Запускается GitHub Actions по нажатию кнопки "Сгенерировать отклик" (через
 Cloudflare Worker -> workflow_dispatch с inputs.action=generate). Берёт ОДНОГО
-кандидата из pending.json по id, прогоняет через draft.py (Claude) и, если
+кандидата из pending/<id>.json, прогоняет через draft.py (Claude) и, если
 релевантно, шлёт полную карточку с черновиком через notify.py. В любом случае
-убирает кандидата из pending.json — повторное нажатие той же кнопки не имеет
+убирает кандидата из pending/ — повторное нажатие той же кнопки не имеет
 смысла (кнопки в самом сообщении уже снесены воркером сразу при нажатии).
 """
-import json
 import sys
-from pathlib import Path
 
 import draft
 import notify
-
-PENDING_FILE = Path(__file__).parent / "pending.json"
+import pending_store
 
 
 def main(candidate_id: str) -> None:
-    pending = json.loads(PENDING_FILE.read_text(encoding="utf-8")) if PENDING_FILE.exists() else {}
-    card = pending.pop(candidate_id, None)
-    PENDING_FILE.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    card = pending_store.load(candidate_id)
 
     if card is None:
-        print(f"candidate_id {candidate_id} не найден в pending.json", file=sys.stderr)
+        # Раньше здесь была тихая заглушка — с точки зрения пользователя
+        # кнопка выглядела просто сломанной, никакой обратной связи не было.
+        # Теперь явно сообщаем в Telegram, чтобы не гадать.
+        print(f"candidate_id {candidate_id} не найден в pending/", file=sys.stderr)
+        import alert
+        alert.send(
+            f"⚠️ Кандидат {candidate_id} не найден — карточка устарела или "
+            f"уже обработана. Если это ошибка, напишите вручную."
+        )
         return
+
+    pending_store.delete(candidate_id)
 
     drafted = draft.run([card])
     if drafted:

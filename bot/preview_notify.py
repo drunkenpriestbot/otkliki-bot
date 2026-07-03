@@ -4,21 +4,20 @@
 только по кнопке). Карточка содержит заголовок/описание/ссылку и две кнопки:
 "Сгенерировать отклик" / "Удалить".
 
-Полные данные кандидата сохраняются в pending.json (по id), чтобы воркер
-(cloudflare-worker/webhook.js) мог дёрнуть GitHub Actions с одним только id
-в callback_data — Telegram ограничивает callback_data 64 байтами, так что
-сам заказ туда не поместится.
+Полные данные кандидата сохраняются в pending/<id>.json (см. pending_store.py),
+чтобы воркер (cloudflare-worker/webhook.js) мог дёрнуть GitHub Actions с одним
+только id в callback_data — Telegram ограничивает callback_data 64 байтами,
+так что сам заказ туда не поместится.
 """
 import html
 import json
 import os
 import sys
 import time
-from pathlib import Path
 
 import requests
 
-PENDING_FILE = Path(__file__).parent / "pending.json"
+import pending_store
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -29,16 +28,6 @@ MAX_DESCRIPTION_LEN = 2500
 # карточками свежий бэклог из нескольких десятков кандидатов сразу ловит 429.
 SEND_DELAY = 1.2
 MAX_RETRIES = 5
-
-
-def load_pending() -> dict:
-    if PENDING_FILE.exists():
-        return json.loads(PENDING_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def save_pending(pending: dict) -> None:
-    PENDING_FILE.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def format_preview(card: dict) -> str:
@@ -93,13 +82,13 @@ def send_preview(card: dict) -> None:
 def run(cards: list[dict]) -> None:
     if not cards:
         return
-    pending = load_pending()
     for card in cards:
         send_preview(card)
-        # Сохраняем после каждой карточки — если упадём на середине списка
-        # (например Telegram/сеть), уже отправленные кандидаты не потеряются.
-        pending[card["id"]] = card
-        save_pending(pending)
+        # Сохраняем сразу после отправки каждой карточки — если упадём на
+        # середине списка (например Telegram/сеть), уже отправленные
+        # кандидаты не потеряются. Каждый кандидат — свой файл, поэтому
+        # параллельный прогон (клик по кнопке) не может затереть эту запись.
+        pending_store.save(card)
         time.sleep(SEND_DELAY)
 
 
