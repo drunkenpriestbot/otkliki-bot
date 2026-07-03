@@ -91,35 +91,41 @@ async function handleCallback(callbackQuery, env) {
     return new Response("unknown action", { status: 200 });
   }
 
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQuery.id, text: "Генерирую черновик…" }),
+  // fetch() сам по себе не бросает исключение на HTTP-ошибку (только на
+  // сетевой сбой) — без явной проверки .ok сбой Telegram/GitHub API нигде
+  // не виден. Логируем каждый шаг в console.log, чтобы `wrangler tail` его
+  // ловил.
+  async function callTelegram(method, body) {
+    const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await resp.text();
+    console.log(`telegram.${method}: ${resp.status} ${text}`);
+    return resp;
+  }
+
+  await callTelegram("answerCallbackQuery", {
+    callback_query_id: callbackQuery.id,
+    text: "Генерирую черновик…",
   });
 
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: callbackQuery.message.chat.id,
-      message_id: callbackQuery.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    }),
+  await callTelegram("editMessageReplyMarkup", {
+    chat_id: callbackQuery.message.chat.id,
+    message_id: callbackQuery.message.message_id,
+    reply_markup: { inline_keyboard: [] },
   });
 
   // Toast от answerCallbackQuery легко пропустить (виден секунду над кнопкой) —
   // отдельное сообщение в чат остаётся видимым, пока не придёт черновик или
   // алерт "кандидат не найден" из generate_one.py.
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: callbackQuery.message.chat.id,
-      text: "⏳ Отклик отправлен на генерацию",
-    }),
+  await callTelegram("sendMessage", {
+    chat_id: callbackQuery.message.chat.id,
+    text: "⏳ Отклик отправлен на генерацию",
   });
 
-  await fetch(
+  const dispatchResp = await fetch(
     `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/monitor.yml/dispatches`,
     {
       method: "POST",
@@ -135,6 +141,7 @@ async function handleCallback(callbackQuery, env) {
       }),
     }
   );
+  console.log(`github.dispatch: ${dispatchResp.status} ${await dispatchResp.text()}`);
 
   return new Response("ok", { status: 200 });
 }
