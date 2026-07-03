@@ -6,18 +6,20 @@ on:
   # пункт 2). Запуск дёргает внешний бесплатный cron-job.org через GitHub REST
   # API (workflow_dispatch), а не встроенный cron.
   #
-  # action=monitor (по умолчанию, дёргает cron-job.org каждые 10 минут) — полный
-  # обход каналов + превью-уведомления с кнопками. action=generate/delete дёргает
-  # Cloudflare Worker (cloudflare-worker/webhook.js) по нажатию кнопки в Telegram —
-  # генерирует черновик для одного кандидата или просто убирает его из pending/.
+  # action=monitor (по умолчанию, дёргает cron-job.org раз в 15 минут) — полный
+  # обход каналов + превью-уведомления с кнопкой. action=generate дёргает
+  # Cloudflare Worker (cloudflare-worker/webhook.js) по нажатию кнопки в
+  # Telegram — генерирует черновик для одного кандидата. Кнопку/action=delete
+  # убрали 04.07 — после regex-префильтра в classify.py мусорных карточек
+  # почти нет, чистить вручную не нужно.
   workflow_dispatch:
     inputs:
       action:
-        description: "monitor | generate | delete"
+        description: "monitor | generate"
         required: false
         default: "monitor"
       candidate_id:
-        description: "id кандидата для generate/delete"
+        description: "id кандидата для generate"
         required: false
         default: ""
 
@@ -76,10 +78,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python generate_one.py "${{ github.event.inputs.candidate_id }}"
-
-      - name: Delete one candidate
-        if: ${{ github.event.inputs.action == 'delete' }}
-        run: python delete_candidate.py "${{ github.event.inputs.candidate_id }}"
 
       - name: Commit updated seen.json / pending / classify_cache.json
         if: always()

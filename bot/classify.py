@@ -25,12 +25,18 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 CACHE_FILE = Path(__file__).parent / "classify_cache.json"
 UNCLASSIFIED_FILE = Path(__file__).parent / "unclassified.json"
 
+# Двухсторонний keyword-фильтр ДО вызова Groq — по аналогии с поиском в
+# App Store/Google Play: явный мусор отсекается по чёрному списку, а то, что
+# осталось, обязано содержать И тематику (монтаж видео), И сигнал найма —
+# иначе Groq вообще не вызывается. Живой инцидент 03.07: дневная TPD-квота
+# (100k токенов) стабильно упирается в потолок при обычной эксплуатации
+# 13 каналов раз в 10 минут — экономить нужно объёмом запросов, не моделью
+# (смена модели уже один раз ломала точность, см. ниже).
+
 # Явные маркеры самопиара монтажёров, предлагающих СВОИ услуги — не вакансии,
 # а противоположность вакансии. Живой инцидент: при смене модели на более
 # дешёвую (llama-3.1-8b-instant) именно эти посты массово путались с наймом
-# по ключевым словам "монтаж"/"монтажёр". Regex ловит только однозначные
-# случаи и отсекает их ДО вызова Groq — экономит квоту без риска для
-# точности на пограничных случаях (те по-прежнему идут на LLM).
+# по ключевым словам "монтаж"/"монтажёр".
 SELF_PROMO_PATTERNS = [
     re.compile(r"#помогу\b", re.IGNORECASE),
     re.compile(
@@ -39,9 +45,51 @@ SELF_PROMO_PATTERNS = [
     ),
 ]
 
+# Другие категории явного мусора, регулярно всплывающие в тех же чатах —
+# крипта/обмен валют и доход-скам ("600$ в день", "без вложений"). Ни разу
+# не были реальной вакансией на монтаж видео за всё время эксплуатации.
+SPAM_PATTERNS = [
+    re.compile(r"\b(usdt|trc[- ]?20)\b", re.IGNORECASE),
+    re.compile(r"курс\s+(обсуд\w*|договорн\w*)", re.IGNORECASE),
+    re.compile(r"без\s+вложени", re.IGNORECASE),
+    re.compile(
+        r"(доход|заработ\w*)\s+(от|до)?\s*\d+\s*(\$|доллар|usd|рубл|₽)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\d+\s*(\$|доллар\S*|usd)\S*\s+в\s+день", re.IGNORECASE),
+]
+
+# Обязательная тематика — должно упоминаться собственно видео/монтаж, иначе
+# это не может быть вакансией на монтаж видео в принципе.
+TOPIC_PATTERN = re.compile(
+    r"(?i)(монт\w*|видеоредактор|видео.?эдитор|reels?|shorts?|tiktok|ролик|"
+    r"видеограф|моушн|сторителлинг)"
+)
+
+# Обязательный сигнал найма — иначе это может быть болтовнёй/самопиаром,
+# упомянувшим монтаж мимоходом, а не постом с вакансией.
+HIRING_SIGNAL_PATTERN = re.compile(
+    r"(?i)(ищ(у|ем|ется)|нужен|нужна|нужны|требуется|треб(уются)?|ваканси|"
+    r"в\s+лс|пис\w*|свяж\w*|@\w+|контакт)"
+)
+
 
 def is_obvious_self_promo(text: str) -> bool:
     return any(p.search(text) for p in SELF_PROMO_PATTERNS)
+
+
+def is_obvious_spam(text: str) -> bool:
+    return any(p.search(text) for p in SPAM_PATTERNS)
+
+
+def passes_prefilter(text: str) -> bool:
+    if is_obvious_self_promo(text) or is_obvious_spam(text):
+        return False
+    if not TOPIC_PATTERN.search(text):
+        return False
+    if not HIRING_SIGNAL_PATTERN.search(text):
+        return False
+    return True
 
 
 def text_hash(text: str) -> str:
@@ -119,7 +167,7 @@ def run(candidates: list[dict]) -> list[dict]:
     for card in candidates:
         text = f"{card['title']}\n{card['description']}"
 
-        if is_obvious_self_promo(text):
+        if not passes_prefilter(text):
             continue
 
         h = text_hash(text)

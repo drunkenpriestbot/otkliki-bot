@@ -51,6 +51,7 @@ CHANNELS = [
     # frilanse и poiskfreelance убраны 02.07 — общие свалки для шабашки/
     # микрозаймов/сетевых разводов, к монтажу видео отношения не имеют, только
     # шумели спамом мимо классификатора.
+    # SearchEditorr убран 04.07 — отклики там платные, не подходит для схемы бота.
     "theClapperChat",
     "jetlagchat",
     "KinoMastery",
@@ -60,7 +61,6 @@ CHANNELS = [
     PRIVATE_CHAT,
     "cam_mtg",
     "vakansii_reelsmaker",
-    "SearchEditorr",
     "reelsmaker_tinder",
     "prodjob",
     "ru_montage_pins",

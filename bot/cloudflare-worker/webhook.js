@@ -8,13 +8,16 @@
  *    прикрепляет такую же кнопку "Перейти к заказу" к отредактированному
  *    сообщению — без отдельной базы данных.
  *
- * 2. Нажатие кнопки "Сгенерировать отклик"/"Удалить" под превью-карточкой
- *    (preview_notify.py) — воркер сразу убирает кнопки и шлёт toast
- *    ("Генерирую…"/"Удалено"), затем дёргает GitHub Actions
- *    (workflow_dispatch на monitor.yml) с inputs.action=generate/delete и
- *    inputs.candidate_id из callback_data. Сама генерация черновика и его
- *    отправка происходят уже внутри workflow (generate_one.py/notify.py) —
- *    воркер только маршрутизирует нажатие, ничего не хранит сам.
+ * 2. Нажатие кнопки "Сгенерировать отклик" под превью-карточкой
+ *    (preview_notify.py) — воркер сразу убирает кнопку, шлёт отдельным
+ *    сообщением в чат "⏳ Отклик отправлен на генерацию" (не просто toast —
+ *    тот легко пропустить и остаться гадать, сработало ли нажатие), затем
+ *    дёргает GitHub Actions (workflow_dispatch на monitor.yml) с
+ *    inputs.action=generate и inputs.candidate_id из callback_data. Сама
+ *    генерация черновика и его отправка происходят уже внутри workflow
+ *    (generate_one.py/notify.py) — воркер только маршрутизирует нажатие,
+ *    ничего не хранит сам. Кнопку "Удалить" убрали 04.07 — после
+ *    regex-префильтра в classify.py мусорных карточек стало мало.
  *
  * ORDER_URL_RE ниже настроен на ссылки вида https://t.me/<канал>/<id>
  * (формат ссылок из monitor_telegram.py) — поменяй regex, если источник заказов
@@ -81,16 +84,17 @@ async function handleCallback(callbackQuery, env) {
   if (sep === -1) {
     return new Response("bad callback_data", { status: 200 });
   }
-  const action = data.slice(0, sep); // "gen" | "del"
+  const action = data.slice(0, sep); // "gen"
   const candidateId = data.slice(sep + 1);
 
-  const ackText =
-    action === "gen" ? "Генерирую черновик…" : action === "del" ? "Удалено" : "ОК";
+  if (action !== "gen") {
+    return new Response("unknown action", { status: 200 });
+  }
 
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQuery.id, text: ackText }),
+    body: JSON.stringify({ callback_query_id: callbackQuery.id, text: "Генерирую черновик…" }),
   });
 
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
@@ -103,27 +107,34 @@ async function handleCallback(callbackQuery, env) {
     }),
   });
 
-  if (action === "gen" || action === "del") {
-    await fetch(
-      `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/monitor.yml/dispatches`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_PAT}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-          "User-Agent": "otkliki-bot-worker",
-        },
-        body: JSON.stringify({
-          ref: "main",
-          inputs: {
-            action: action === "gen" ? "generate" : "delete",
-            candidate_id: candidateId,
-          },
-        }),
-      }
-    );
-  }
+  // Toast от answerCallbackQuery легко пропустить (виден секунду над кнопкой) —
+  // отдельное сообщение в чат остаётся видимым, пока не придёт черновик или
+  // алерт "кандидат не найден" из generate_one.py.
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: callbackQuery.message.chat.id,
+      text: "⏳ Отклик отправлен на генерацию",
+    }),
+  });
+
+  await fetch(
+    `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/monitor.yml/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_PAT}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "otkliki-bot-worker",
+      },
+      body: JSON.stringify({
+        ref: "main",
+        inputs: { action: "generate", candidate_id: candidateId },
+      }),
+    }
+  );
 
   return new Response("ok", { status: 200 });
 }
