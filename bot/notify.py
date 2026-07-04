@@ -74,8 +74,11 @@ def format_card(card: dict) -> str:
         else ""
     )
 
+    source_line = f"📍 {html.escape(card['source'])}\n" if card.get("source") else ""
+
     return (
         f"🆕 {html.escape(card['title'])}\n"
+        f"{source_line}"
         f"{budget_line}"
         f"🔗 {html.escape(card['url'])}\n\n"
         f"{description_block}"

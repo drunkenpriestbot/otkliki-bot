@@ -126,7 +126,7 @@ def load_cache() -> dict:
 def save_cache(cache: dict) -> None:
     CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
-PROMPT_TEMPLATE = """Сообщение из Telegram-канала/чата фрилансеров-монтажёров:
+PROMPT_TEMPLATE = """Пост/заказ с биржи фриланса или из Telegram-канала/чата монтажёров:
 Заголовок: {title}
 Описание: {description}
 

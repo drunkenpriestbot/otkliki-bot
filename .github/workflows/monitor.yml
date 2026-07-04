@@ -54,6 +54,9 @@ jobs:
       - name: Install Python deps
         run: pip install -r requirements.txt
 
+      - name: Install Playwright browser (Kwork source)
+        run: playwright install --with-deps chromium
+
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
@@ -75,7 +78,9 @@ jobs:
           GROQ_API_KEY_8: ${{ secrets.GROQ_API_KEY_8 }}
           GROQ_API_KEY_9: ${{ secrets.GROQ_API_KEY_9 }}
         run: |
-          python monitor_telegram.py > candidates.json
+          python monitor_telegram.py > tg_candidates.json
+          python monitor_kwork.py > kwork_candidates.json
+          python merge_candidates.py tg_candidates.json kwork_candidates.json > candidates.json
           python classify.py < candidates.json > classified.json
           python preview_notify.py < classified.json
 
@@ -102,6 +107,7 @@ jobs:
           # добавляем их только если есть, иначе `git add` на несуществующий
           # путь падает и рвёт весь шаг.
           git add seen.json
+          [ -f seen_kwork.json ] && git add seen_kwork.json
           [ -d pending ] && git add pending/
           [ -f classify_cache.json ] && git add classify_cache.json
           [ -f unclassified.json ] && git add unclassified.json
