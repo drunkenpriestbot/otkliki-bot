@@ -1,0 +1,44 @@
+name: Gate 0 - Kwork access check
+
+# Разовый диагностический прогон (см. bot/gate0_kwork_check.py): проверяет,
+# отдаёт ли Kwork нормальную страницу заказов анонимному запросу с реального
+# IP GitHub Actions runner'а, или сразу капчу/403. Результат решает, стоит ли
+# вообще строить monitor_kwork.py на Playwright + Actions без residential-
+# прокси. Не часть production-пайплайна, workflow_dispatch only.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gate0:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Run gate 0 check
+        run: python gate0_kwork_check.py
+
+      - name: Upload screenshot + html
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate0-kwork-result
+          path: |
+            bot/screenshot.png
+            bot/page.html
+          retention-days: 7
