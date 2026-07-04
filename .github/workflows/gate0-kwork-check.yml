@@ -30,11 +30,8 @@ jobs:
           pip install playwright
           playwright install --with-deps chromium
 
-      - name: Run gate 0 check
-        run: python gate0_kwork_check.py
-
-      - name: Run gate 0b filter URL check
-        run: python gate0b_kwork_filter_url.py
+      - name: Run gate 0c keyword URL check
+        run: python gate0c_kwork_keyword_url.py
 
       - name: Upload screenshot + html
         if: always()
@@ -44,7 +41,4 @@ jobs:
           path: |
             bot/screenshot.png
             bot/page.html
-            bot/filter_result.png
-            bot/filter_result.html
-            bot/filter_expanded.png
           retention-days: 7
