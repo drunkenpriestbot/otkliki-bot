@@ -103,10 +103,21 @@ def is_obvious_spam(text: str) -> bool:
     return any(p.search(text) for p in SPAM_PATTERNS)
 
 
-def passes_prefilter(text: str) -> bool:
-    if is_obvious_self_promo(text) or is_obvious_spam(text):
+def passes_prefilter(text: str, source: str = "") -> bool:
+    if is_obvious_spam(text):
         return False
     if not TOPIC_PATTERN.search(text):
+        return False
+
+    # На Kwork /projects — по определению уже заказ покупателя, а не
+    # переписка/самопиар монтажёра, как в шумных Telegram-каналах. Требовать
+    # тут слова вроде "ищу"/"нужен"/"в лс" неверно: заказчик обычно пишет
+    # задачу императивом ("Смонтировать ролик 45-75 сек"), без них — и такие
+    # карточки тихо терялись ДО Groq, без единого сигнала об этом.
+    if source == "Kwork":
+        return True
+
+    if is_obvious_self_promo(text):
         return False
     if not HIRING_SIGNAL_PATTERN.search(text):
         return False
@@ -205,7 +216,7 @@ def run(candidates: list[dict]) -> list[dict]:
     for card in candidates:
         text = f"{card['title']}\n{card['description']}"
 
-        if not passes_prefilter(text):
+        if not passes_prefilter(text, card.get("source", "")):
             continue
 
         h = text_hash(text)
