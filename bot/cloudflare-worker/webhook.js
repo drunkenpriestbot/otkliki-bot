@@ -9,15 +9,23 @@
  *    сообщению — без отдельной базы данных.
  *
  * 2. Нажатие кнопки "Сгенерировать отклик" под превью-карточкой
- *    (preview_notify.py) — воркер сразу убирает кнопку, шлёт отдельным
- *    сообщением в чат "⏳ Отклик отправлен на генерацию" (не просто toast —
- *    тот легко пропустить и остаться гадать, сработало ли нажатие), затем
- *    дёргает GitHub Actions (workflow_dispatch на monitor.yml) с
- *    inputs.action=generate и inputs.candidate_id из callback_data. Сама
- *    генерация черновика и его отправка происходят уже внутри workflow
- *    (generate_one.py/notify.py) — воркер только маршрутизирует нажатие,
- *    ничего не хранит сам. Кнопку "Удалить" убрали 04.07 — после
- *    regex-префильтра в classify.py мусорных карточек стало мало.
+ *    (preview_notify.py) — воркер шлёт отдельным сообщением в чат
+ *    "⏳ Отклик отправлен на генерацию" (не просто toast — тот легко
+ *    пропустить и остаться гадать, сработало ли нажатие), затем дёргает
+ *    GitHub Actions (workflow_dispatch на monitor.yml) с inputs.action=generate
+ *    и inputs.candidate_id из callback_data. Сама генерация черновика и его
+ *    отправка происходят уже внутри workflow (generate_one.py/notify.py) —
+ *    воркер только маршрутизирует нажатие, ничего не хранит сам. Кнопку
+ *    "Удалить" убрали 04.07 — после regex-префильтра в classify.py мусорных
+ *    карточек стало мало.
+ *
+ *    Кнопку "Сгенерировать отклик" НЕ убираем после нажатия (было убрано
+ *    editMessageReplyMarkup до 09.07, из-за чего при сбое GitHub Actions
+ *    заявка зависала без единого способа повторить генерацию — кнопки уже
+ *    нет, а джоба тем временем упала). Повторный клик безопасен:
+ *    generate_one.py удаляет pending/<id>.json только когда джоба реально
+ *    стартует, а если кандидат уже обработан — шлёт явный алерт "не найден"
+ *    вместо тихой генерации дубля.
  *
  * ORDER_URL_RE ниже настроен на ссылки вида https://t.me/<канал>/<id>
  * (формат ссылок из monitor_telegram.py) — поменяй regex, если источник заказов
@@ -109,12 +117,6 @@ async function handleCallback(callbackQuery, env) {
   await callTelegram("answerCallbackQuery", {
     callback_query_id: callbackQuery.id,
     text: "Генерирую черновик…",
-  });
-
-  await callTelegram("editMessageReplyMarkup", {
-    chat_id: callbackQuery.message.chat.id,
-    message_id: callbackQuery.message.message_id,
-    reply_markup: { inline_keyboard: [] },
   });
 
   // Toast от answerCallbackQuery легко пропустить (виден секунду над кнопкой) —
