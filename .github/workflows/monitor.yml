@@ -54,9 +54,6 @@ jobs:
       - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browser (Kwork source)
-        run: playwright install --with-deps chromium
-
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
@@ -79,8 +76,7 @@ jobs:
           GROQ_API_KEY_9: ${{ secrets.GROQ_API_KEY_9 }}
         run: |
           python monitor_telegram.py > tg_candidates.json
-          python monitor_kwork.py > kwork_candidates.json
-          python merge_candidates.py tg_candidates.json kwork_candidates.json > candidates.json
+          python merge_candidates.py tg_candidates.json > candidates.json
           python classify.py < candidates.json > classified.json
           python preview_notify.py < classified.json
 
