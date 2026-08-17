@@ -19,7 +19,7 @@ from pathlib import Path
 import requests
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 
 def _load_groq_keys() -> list[str]:
