@@ -180,6 +180,12 @@ def ask_groq(prompt: str) -> str:
         key = GROQ_KEYS[_current_key_idx]
 
         for attempt in range(GROQ_MAX_RETRIES):
+            # gpt-oss-120b — reasoning-модель: без reasoning_effort='low' и с
+            # max_tokens=5 она обрывается на служебных токенах размышления
+            # раньше, чем успевает выдать YES/NO — content приходит пустым,
+            # что код молча трактует как NO. Живой инцидент 03.09: почти все
+            # новые кандидаты стабильно улетали в NO, доходили только старые
+            # кэш-хиты.
             resp = requests.post(
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {key}"},
@@ -187,7 +193,8 @@ def ask_groq(prompt: str) -> str:
                     "model": GROQ_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
-                    "max_tokens": 5,
+                    "max_tokens": 60,
+                    "reasoning_effort": "low",
                 },
                 timeout=30,
             )
